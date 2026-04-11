@@ -99,6 +99,9 @@ Update them to match your environment **before deployment**.
 | `MAX_PROCESS_WORKERS` | `None` (auto)          | Fix to an int to cap process pool size         |
 | `MAX_THREAD_WORKERS`  | `None` (auto)          | Fix to an int to cap thread pool size          |
 
+For **EC2 T2 / T3** sizing (nano through 2xlarge), burstable CPU credits, and
+example values for small / medium / high tiers, see [README.md](README.md).
+
 ---
 
 ## Installation
@@ -172,10 +175,6 @@ crontab -l
 ```
 
 ---
-```
-sudo touch /var/log/camera/error.log
-sudo chmod 644 /var/log/camera/error.log
-```
 
 ## Monitoring
 
