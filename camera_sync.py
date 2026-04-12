@@ -161,14 +161,15 @@ def _upload_and_verify(
     bucket: str,
     s3_key: str,
     local_path: Path,
-) -> Tuple[bool, str]:
+) -> Tuple[bool, str, float, float]:
     """Upload a single file to S3 and verify it.
 
-    Returns (success: bool, message: str).
+    Returns (success, message, upload_seconds, verify_seconds).
     """
     local_size = local_path.stat().st_size
     local_md5 = md5_file(local_path)
 
+    t_upload0 = time.perf_counter()
     try:
         s3_client.upload_file(
             str(local_path),
@@ -177,28 +178,35 @@ def _upload_and_verify(
             ExtraArgs={"ContentMD5": _b64md5(local_path)},
         )
     except (BotoCoreError, ClientError) as exc:
-        return False, f"Upload failed: {exc}"
+        upload_sec = time.perf_counter() - t_upload0
+        return False, f"Upload failed: {exc}", upload_sec, 0.0
+    upload_sec = time.perf_counter() - t_upload0
 
+    t_verify0 = time.perf_counter()
     try:
         head = s3_client.head_object(Bucket=bucket, Key=s3_key)
     except (BotoCoreError, ClientError) as exc:
-        return False, f"Verify head-object failed: {exc}"
+        verify_sec = time.perf_counter() - t_verify0
+        return False, f"Verify head-object failed: {exc}", upload_sec, verify_sec
 
     remote_size = head["ContentLength"]
     remote_etag = head["ETag"].strip('"')
 
     if remote_size != local_size:
+        verify_sec = time.perf_counter() - t_verify0
         return False, (
             f"Size mismatch: local={local_size} remote={remote_size}"
-        )
+        ), upload_sec, verify_sec
 
     # ETag equals MD5 only for single-part uploads (files < 5 GiB by default).
     if "-" not in remote_etag and remote_etag != local_md5:
+        verify_sec = time.perf_counter() - t_verify0
         return False, (
             f"MD5 mismatch: local={local_md5} remote={remote_etag}"
-        )
+        ), upload_sec, verify_sec
 
-    return True, "OK"
+    verify_sec = time.perf_counter() - t_verify0
+    return True, "OK", upload_sec, verify_sec
 
 
 def _b64md5(path: Path) -> str:
@@ -218,10 +226,18 @@ def _b64md5(path: Path) -> str:
 def sync_user(user: str, thread_workers: int) -> dict:
     """Full scan → spool → upload → verify → cleanup for one user.
 
-    Returns a stats dict: {user, ok, failed, skipped, errors[]}.
+    Returns a stats dict: {user, ok, failed, skipped, errors[], upload_sec, verify_sec}.
     """
     proc_log = _build_logger()
-    stats: dict = {"user": user, "ok": 0, "failed": 0, "skipped": 0, "errors": []}
+    stats: dict = {
+        "user": user,
+        "ok": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": [],
+        "upload_sec": 0.0,
+        "verify_sec": 0.0,
+    }
     user_root = BASE_DIR / user
     spool_dir = user_root / ".spool"
     failed_dir = user_root / "failed"
@@ -286,10 +302,14 @@ def sync_user(user: str, thread_workers: int) -> dict:
     # ── 4. Upload + Verify (threaded) ────────────────────────────────────
     s3_client = boto3.client("s3")
 
-    def _process_file(spool_path: Path, rel: Path) -> Tuple[Path, Path, bool, str]:
+    def _process_file(
+        spool_path: Path, rel: Path,
+    ) -> Tuple[Path, Path, bool, str, float, float]:
         s3_key = f"{PREFIX}/{user}/{rel.as_posix()}"
-        ok, msg = _upload_and_verify(s3_client, BUCKET, s3_key, spool_path)
-        return spool_path, rel, ok, msg
+        ok, msg, up_s, ver_s = _upload_and_verify(
+            s3_client, BUCKET, s3_key, spool_path,
+        )
+        return spool_path, rel, ok, msg, up_s, ver_s
 
     with ThreadPoolExecutor(max_workers=thread_workers) as pool:
         futures = {
@@ -300,7 +320,7 @@ def sync_user(user: str, thread_workers: int) -> dict:
         for fut in as_completed(futures):
             rel = futures[fut]
             try:
-                spool_path, rel_out, ok, msg = fut.result()
+                spool_path, rel_out, ok, msg, up_s, ver_s = fut.result()
             except Exception as exc:
                 proc_log.error("%s | Unhandled | %s | %s", user, rel, exc)
                 stats["failed"] += 1
@@ -312,11 +332,19 @@ def sync_user(user: str, thread_workers: int) -> dict:
                     spool_path.unlink()
                 except OSError:
                     pass
-                proc_log.info("%s | OK | %s (deleted)", user, rel_out)
+                stats["upload_sec"] += up_s
+                stats["verify_sec"] += ver_s
+                proc_log.info(
+                    "%s | OK | %s (deleted) | upload_s=%.3f verify_s=%.3f",
+                    user, rel_out, up_s, ver_s,
+                )
                 stats["ok"] += 1
             else:
                 _atomic_move(spool_path, failed_dir / rel_out)
-                proc_log.warning("%s | FAIL | %s | %s", user, rel_out, msg)
+                proc_log.warning(
+                    "%s | FAIL | %s | %s | upload_s=%.3f verify_s=%.3f",
+                    user, rel_out, msg, up_s, ver_s,
+                )
                 stats["failed"] += 1
                 stats["errors"].append(f"{rel_out}: {msg}")
 
@@ -325,8 +353,13 @@ def sync_user(user: str, thread_workers: int) -> dict:
         _prune_empty_dirs(spool_dir)
 
     proc_log.info(
-        "%s | Done | ok=%d failed=%d skipped=%d",
-        user, stats["ok"], stats["failed"], stats["skipped"],
+        "%s | Done | ok=%d failed=%d skipped=%d | upload_s=%.3f verify_s=%.3f",
+        user,
+        stats["ok"],
+        stats["failed"],
+        stats["skipped"],
+        stats["upload_sec"],
+        stats["verify_sec"],
     )
     return stats
 
@@ -449,17 +482,32 @@ def _run_sync() -> None:
                 all_stats.append(stats)
             except Exception:
                 log.exception("Process-level failure for user %s", user)
-                all_stats.append({"user": user, "ok": 0, "failed": 0, "errors": ["process crash"]})
+                all_stats.append({
+                    "user": user,
+                    "ok": 0,
+                    "failed": 0,
+                    "errors": ["process crash"],
+                    "upload_sec": 0.0,
+                    "verify_sec": 0.0,
+                })
 
     total_ok = sum(s["ok"] for s in all_stats)
     total_fail = sum(s["failed"] for s in all_stats)
+    total_upload_s = sum(float(s.get("upload_sec", 0.0)) for s in all_stats)
+    total_verify_s = sum(float(s.get("verify_sec", 0.0)) for s in all_stats)
 
     # Write alive marker
     alive_path = LOG_DIR / "cron_alive.log"
     with open(alive_path, "a") as af:
         af.write(f"{time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} OK\n")
 
-    log.info("Sync end | total_ok=%d total_failed=%d", total_ok, total_fail)
+    log.info(
+        "Sync end | total_ok=%d total_failed=%d | upload_s=%.3f verify_s=%.3f",
+        total_ok,
+        total_fail,
+        total_upload_s,
+        total_verify_s,
+    )
 
 
 if __name__ == "__main__":

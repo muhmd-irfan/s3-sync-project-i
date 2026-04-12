@@ -119,8 +119,8 @@ sudo mkdir -p /var/log/camera
 sudo chown $(whoami):$(whoami) /var/log/camera
 
 # 4. Copy scripts to a known location
-sudo cp camera_sync.py retry_failed.py /opt/camera-sync/
-sudo chmod +x /opt/camera-sync/*.py
+sudo cp camera_sync.py retry_failed.py /opt/camera_sync/
+sudo chmod +x /opt/camera_sync/*.py
 ```
 
 ---
@@ -137,10 +137,10 @@ Add these two lines:
 
 ```cron
 # Primary sync — every 5 minutes
-*/5 * * * * /usr/bin/python3 /opt/camera-sync/camera_sync.py >> /var/log/camera/cron_sync.log 2>&1
+*/5 * * * * /usr/bin/python3 /opt/camera_sync/camera_sync.py >> /var/log/camera/cron_sync.log 2>&1
 
 # Failed-file retry — every hour at minute 30 (offset to avoid overlapping with sync)
-30 * * * * /usr/bin/python3 /opt/camera-sync/retry_failed.py >> /var/log/camera/cron_retry.log 2>&1
+30 * * * * /usr/bin/python3 /opt/camera_sync/retry_failed.py >> /var/log/camera/cron_retry.log 2>&1
 ```
 
 Save and exit. Verify with:

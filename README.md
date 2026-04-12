@@ -2,6 +2,77 @@
 
 Python utilities that sync files from a local FTP-style directory tree to Amazon S3, verify uploads, delete successful copies to save disk, and retry failures. Full behavior, cron examples, and layout are in [docs.md](docs.md).
 
+## Running on Amazon EC2
+
+Use a Linux instance in the same AWS account (and usually the same Region) as your S3 bucket so latency and data transfer stay simple.
+
+### 1. Launch the instance
+
+- **AMI:** Amazon Linux 2023 or Ubuntu 22.04 LTS (any recent Linux with Python 3 is fine).
+- **Instance type:** Match your FTP load and how many user folders upload in parallel; see [Tuning CPU, processes, and threads](#tuning-cpu-processes-and-threads-ec2-t2--t3) below. A **t3.small** or **t3.medium** is a reasonable starting point for modest camera traffic.
+- **Storage:** Size the root (or a separate EBS volume) for your local FTP tree (`BASE_DIR`), spool space, and logs. The sync deletes files from disk after a successful upload, but spikes and `failed/` quarantine still need headroom.
+- **Security group:** Allow **SSH (22)** from your IP (or a bastion). Open any ports your FTP/SFTP stack needs (e.g. 21, passive FTP range) only from trusted sources.
+
+### 2. IAM permissions (recommended)
+
+Attach an **IAM instance profile** to the EC2 instance instead of putting long‑lived access keys on the disk. Grant the role at least:
+
+- `s3:PutObject`, `s3:GetObject`, `s3:HeadObject` on `arn:aws:s3:::<your-bucket>/*` (tighten with a prefix if you use one).
+
+With a role attached, you do **not** need `aws configure` on the instance unless you also use the CLI for something else.
+
+### 3. Install Python and boto3
+
+**Amazon Linux 2023:**
+
+```bash
+sudo dnf install -y python3 python3-pip
+python3 -m pip install --user boto3
+```
+
+**Ubuntu:**
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-pip python3-venv
+python3 -m pip install --user boto3
+```
+
+Ensure the user that will run cron can import boto3 (same user as `pip install --user`, or install boto3 with `sudo pip3 install boto3` for a system-wide install).
+
+### 4. Deploy the scripts and directories
+
+On the instance, copy or clone this repo, then:
+
+```bash
+sudo mkdir -p /opt/camera_sync /var/log/camera
+sudo cp camera_sync.py retry_failed.py /opt/camera_sync/
+sudo chmod +x /opt/camera_sync/*.py
+```
+
+Create your FTP root if it does not exist (default in the scripts is `/var/ftp/local`):
+
+```bash
+sudo mkdir -p /var/ftp/local
+sudo chown -R <ftp-or-app-user>:<ftp-or-app-user> /var/ftp/local
+sudo chown <ftp-or-app-user>:<ftp-or-app-user> /var/log/camera
+```
+
+Edit **`/opt/camera_sync/camera_sync.py`** and **`/opt/camera_sync/retry_failed.py`**: set `BASE_DIR`, `BUCKET`, `PREFIX`, and `LOG_DIR` to match this host. Keep `MAX_PROCESS_WORKERS` / `MAX_THREAD_WORKERS` aligned between the two files if you tune them.
+
+**Lock files** default to `/var/run/camera_sync.lock` and `/var/run/retry_failed.lock`. On many distros only root can create files there. If cron runs as a non-root user and the job fails to create the lock, use **root’s crontab** (`sudo crontab -e`) or change `LOCKFILE` in both scripts to a path that user can write (for example under `/var/lib/camera_sync/`).
+
+### 5. Schedule runs (cron)
+
+Follow [docs.md — Cron Setup](docs.md#cron-setup): sync every 5 minutes and the retry job hourly. Use the same `python3` you used to verify `boto3` (often `/usr/bin/python3`).
+
+### 6. Verify
+
+- Run once manually: `python3 /opt/camera_sync/camera_sync.py` and check `/var/log/camera/sync.log`.
+- After cron is active, use the heartbeat and log paths described in [docs.md — Monitoring](docs.md#monitoring).
+
+For S3 request-rate notes and burstable-instance behavior, see the tuning section below and [docs.md](docs.md).
+
 ## Tuning CPU, processes, and threads (EC2 T2 / T3)
 
 Both `camera_sync.py` and `retry_failed.py` use:

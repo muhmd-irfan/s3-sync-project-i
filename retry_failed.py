@@ -181,33 +181,52 @@ def _diagnose(s3_client, bucket: str, s3_key: str, local_path: Path) -> str:
 
 def _upload_and_verify(
     s3_client, bucket: str, s3_key: str, local_path: Path,
-) -> Tuple[bool, str]:
+) -> Tuple[bool, str, float, float]:
+    """Returns (success, message, upload_seconds, verify_seconds)."""
     local_size = local_path.stat().st_size
     local_md5 = _md5_hex(local_path)
 
+    t_upload0 = time.perf_counter()
     try:
         s3_client.upload_file(
             str(local_path), bucket, s3_key,
             ExtraArgs={"ContentMD5": _b64md5(local_path)},
         )
     except (BotoCoreError, ClientError) as exc:
-        return False, f"Upload failed: {exc}"
+        upload_sec = time.perf_counter() - t_upload0
+        return False, f"Upload failed: {exc}", upload_sec, 0.0
+    upload_sec = time.perf_counter() - t_upload0
 
+    t_verify0 = time.perf_counter()
     try:
         head = s3_client.head_object(Bucket=bucket, Key=s3_key)
     except (BotoCoreError, ClientError) as exc:
-        return False, f"Verify head-object failed: {exc}"
+        verify_sec = time.perf_counter() - t_verify0
+        return False, f"Verify head-object failed: {exc}", upload_sec, verify_sec
 
     remote_size = head["ContentLength"]
     remote_etag = head["ETag"].strip('"')
 
     if remote_size != local_size:
-        return False, f"Size mismatch: local={local_size} remote={remote_size}"
+        verify_sec = time.perf_counter() - t_verify0
+        return (
+            False,
+            f"Size mismatch: local={local_size} remote={remote_size}",
+            upload_sec,
+            verify_sec,
+        )
 
     if "-" not in remote_etag and remote_etag != local_md5:
-        return False, f"MD5 mismatch: local={local_md5} remote={remote_etag}"
+        verify_sec = time.perf_counter() - t_verify0
+        return (
+            False,
+            f"MD5 mismatch: local={local_md5} remote={remote_etag}",
+            upload_sec,
+            verify_sec,
+        )
 
-    return True, "OK"
+    verify_sec = time.perf_counter() - t_verify0
+    return True, "OK", upload_sec, verify_sec
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -216,8 +235,8 @@ def _upload_and_verify(
 
 def _retry_file(
     s3_client, bucket: str, user: str, failed_dir: Path, fpath: Path,
-) -> Tuple[Path, str, bool, str]:
-    """Diagnose, optionally re-upload, return (path, rel, success, detail)."""
+) -> Tuple[Path, str, bool, str, float, float]:
+    """Diagnose, optionally re-upload; returns (path, rel, ok, detail, upload_s, verify_s)."""
     rel = fpath.relative_to(failed_dir)
     s3_key = f"{PREFIX}/{user}/{rel.as_posix()}"
     rlog = _build_logger()
@@ -226,31 +245,47 @@ def _retry_file(
     rlog.info("%s | DIAG | %s | reason=%s", user, rel, reason)
 
     if reason == "already_on_s3":
-        return fpath, str(rel), True, "already_on_s3 (deleting local)"
+        return fpath, str(rel), True, "already_on_s3 (deleting local)", 0.0, 0.0
 
     if reason.startswith("local_unreadable"):
-        return fpath, str(rel), False, reason
+        return fpath, str(rel), False, reason, 0.0, 0.0
 
     if reason.startswith("s3_access_error"):
-        return fpath, str(rel), False, reason
+        return fpath, str(rel), False, reason, 0.0, 0.0
 
     # Needs re-upload: not_on_s3 / size_mismatch / md5_mismatch
     last_err = reason
     for attempt in range(1, MAX_RETRIES + 1):
-        ok, msg = _upload_and_verify(s3_client, bucket, s3_key, fpath)
+        ok, msg, up_s, ver_s = _upload_and_verify(
+            s3_client, bucket, s3_key, fpath,
+        )
         if ok:
             rlog.info(
-                "%s | RETRY OK | %s | attempt=%d/%d",
-                user, rel, attempt, MAX_RETRIES,
+                "%s | RETRY OK | %s | attempt=%d/%d | upload_s=%.3f verify_s=%.3f",
+                user, rel, attempt, MAX_RETRIES, up_s, ver_s,
             )
-            return fpath, str(rel), True, f"retry_ok (attempt {attempt})"
+            return (
+                fpath,
+                str(rel),
+                True,
+                f"retry_ok (attempt {attempt})",
+                up_s,
+                ver_s,
+            )
         last_err = msg
         rlog.warning(
             "%s | RETRY FAIL | %s | attempt=%d/%d | %s",
             user, rel, attempt, MAX_RETRIES, msg,
         )
 
-    return fpath, str(rel), False, f"exhausted {MAX_RETRIES} retries: {last_err}"
+    return (
+        fpath,
+        str(rel),
+        False,
+        f"exhausted {MAX_RETRIES} retries: {last_err}",
+        0.0,
+        0.0,
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -259,7 +294,14 @@ def _retry_file(
 
 def retry_user(user: str, thread_workers: int) -> dict:
     plog = _build_logger()
-    stats: dict = {"user": user, "ok": 0, "failed": 0, "errors": []}
+    stats: dict = {
+        "user": user,
+        "ok": 0,
+        "failed": 0,
+        "errors": [],
+        "upload_sec": 0.0,
+        "verify_sec": 0.0,
+    }
     user_root = BASE_DIR / user
     failed_dir = user_root / "failed"
 
@@ -287,7 +329,7 @@ def retry_user(user: str, thread_workers: int) -> dict:
         for fut in as_completed(futures):
             fp = futures[fut]
             try:
-                fpath, rel, ok, detail = fut.result()
+                fpath, rel, ok, detail, up_s, ver_s = fut.result()
             except Exception as exc:
                 plog.error("%s | Unhandled | %s | %s", user, fp, exc)
                 stats["failed"] += 1
@@ -299,7 +341,12 @@ def retry_user(user: str, thread_workers: int) -> dict:
                     fpath.unlink()
                 except OSError:
                     pass
-                plog.info("%s | RESOLVED | %s | %s", user, rel, detail)
+                stats["upload_sec"] += up_s
+                stats["verify_sec"] += ver_s
+                plog.info(
+                    "%s | RESOLVED | %s | %s | upload_s=%.3f verify_s=%.3f",
+                    user, rel, detail, up_s, ver_s,
+                )
                 stats["ok"] += 1
             else:
                 plog.warning("%s | STILL FAILED | %s | %s", user, rel, detail)
@@ -309,8 +356,12 @@ def retry_user(user: str, thread_workers: int) -> dict:
     _prune_empty_dirs(failed_dir)
 
     plog.info(
-        "%s | Retry done | ok=%d still_failed=%d",
-        user, stats["ok"], stats["failed"],
+        "%s | Retry done | ok=%d still_failed=%d | upload_s=%.3f verify_s=%.3f",
+        user,
+        stats["ok"],
+        stats["failed"],
+        stats["upload_sec"],
+        stats["verify_sec"],
     )
     return stats
 
@@ -429,11 +480,26 @@ def _run_retry() -> None:
                 all_stats.append(stats)
             except Exception:
                 log.exception("Process-level failure for user %s", user)
-                all_stats.append({"user": user, "ok": 0, "failed": 0, "errors": ["process crash"]})
+                all_stats.append({
+                    "user": user,
+                    "ok": 0,
+                    "failed": 0,
+                    "errors": ["process crash"],
+                    "upload_sec": 0.0,
+                    "verify_sec": 0.0,
+                })
 
     total_ok = sum(s["ok"] for s in all_stats)
     total_fail = sum(s["failed"] for s in all_stats)
-    log.info("Retry end | resolved=%d still_failed=%d", total_ok, total_fail)
+    total_upload_s = sum(float(s.get("upload_sec", 0.0)) for s in all_stats)
+    total_verify_s = sum(float(s.get("verify_sec", 0.0)) for s in all_stats)
+    log.info(
+        "Retry end | resolved=%d still_failed=%d | upload_s=%.3f verify_s=%.3f",
+        total_ok,
+        total_fail,
+        total_upload_s,
+        total_verify_s,
+    )
 
 
 if __name__ == "__main__":
