@@ -171,12 +171,7 @@ def _upload_and_verify(
 
     t_upload0 = time.perf_counter()
     try:
-        s3_client.upload_file(
-            str(local_path),
-            bucket,
-            s3_key,
-            ExtraArgs={"ContentMD5": _b64md5(local_path)},
-        )
+        s3_client.upload_file(str(local_path), bucket, s3_key)
     except (BotoCoreError, ClientError) as exc:
         upload_sec = time.perf_counter() - t_upload0
         return False, f"Upload failed: {exc}", upload_sec, 0.0
@@ -207,16 +202,6 @@ def _upload_and_verify(
 
     verify_sec = time.perf_counter() - t_verify0
     return True, "OK", upload_sec, verify_sec
-
-
-def _b64md5(path: Path) -> str:
-    """Return the base64-encoded MD5 required by S3 ContentMD5."""
-    import base64
-    h = hashlib.md5()
-    with open(path, "rb") as f:
-        while chunk := f.read(8 * 1024 * 1024):
-            h.update(chunk)
-    return base64.b64encode(h.digest()).decode()
 
 
 # ──────────────────────────────────────────────────────────────────────────────

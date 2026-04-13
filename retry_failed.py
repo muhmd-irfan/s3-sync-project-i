@@ -8,7 +8,6 @@ Designed to run hourly via cron alongside camera_sync.py.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import logging
 import os
@@ -113,14 +112,6 @@ def _md5_hex(path: Path) -> str:
     return h.hexdigest()
 
 
-def _b64md5(path: Path) -> str:
-    h = hashlib.md5()
-    with open(path, "rb") as f:
-        while chunk := f.read(8 * 1024 * 1024):
-            h.update(chunk)
-    return base64.b64encode(h.digest()).decode()
-
-
 def _prune_empty_dirs(root: Path) -> None:
     for dirpath, _, _ in os.walk(str(root), topdown=False):
         dp = Path(dirpath)
@@ -188,10 +179,7 @@ def _upload_and_verify(
 
     t_upload0 = time.perf_counter()
     try:
-        s3_client.upload_file(
-            str(local_path), bucket, s3_key,
-            ExtraArgs={"ContentMD5": _b64md5(local_path)},
-        )
+        s3_client.upload_file(str(local_path), bucket, s3_key)
     except (BotoCoreError, ClientError) as exc:
         upload_sec = time.perf_counter() - t_upload0
         return False, f"Upload failed: {exc}", upload_sec, 0.0
