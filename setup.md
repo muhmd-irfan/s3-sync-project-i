@@ -12,12 +12,12 @@ End-to-end steps from cloning this repository to running `camera_sync.py` and `r
 
 | Component | Version |
 |-----------|---------|
-| Python | 3.9.25 |
-| pip | 21.3.1 |
+| Python | **3.12.x** (minimum **3.10**; AWS SDKs [drop 3.9 support after 2026-04-29](https://aws.amazon.com/blogs/developer/python-support-policy-updates-for-aws-sdks-and-tools/)) |
+| pip | current for that interpreter (`pip install --upgrade pip`) |
 | boto3 | 1.42.88 |
 | botocore | 1.42.88 |
 
-Use a `python3` binary that reports **3.9.25** (or install that exact runtime via your OS, **pyenv**, or another method if the default image is different). Then install **pip**, **boto3**, and **botocore** as in [§3 Install Python packages](#3-install-python-packages).
+Use a **`python3.12`** (or **`python3.11`**) binary on hosts where the default `python3` is still 3.9 (common on Amazon Linux 2023). Install **pip**, **boto3**, and **botocore** as in [§3 Install Python packages](#3-install-python-packages), then point cron at the same interpreter path you verify.
 
 
 This guide assumes **cron runs as root** (`root`’s crontab), so default lock paths under `/var/run/` work and the jobs can read/write across your FTP tree regardless of file ownership.
@@ -74,33 +74,63 @@ sudo aws sts get-caller-identity
 
 ## 3. Install Python packages
 
-Install the OS **Python 3** and **pip** packages first (versions vary by image). Align the interpreter with **Python 3.9.25** if needed, then pin **pip** and the AWS SDK:
+Install a **supported** Python (**3.10+**, reference **3.12**), then **upgrade pip** and install the AWS SDK (versions below match current PyPI as of this doc; bump the pin if you intentionally move to a newer release).
 
 ```bash
-sudo python3 --version   # expect 3.9.25 when matching the reference stack
-sudo python3 -m pip install pip==21.3.1
-sudo python3 -m pip install boto3==1.42.88 botocore==1.42.88
+PY=python3.12   # or python3.11 / python3 on distros where default is already ≥3.10
+sudo $PY --version
+sudo $PY -m pip install --upgrade pip
+sudo $PY -m pip install boto3==1.42.88 botocore==1.42.88
 ```
 
-**Amazon Linux 2023** (example: ensure `python3` is your 3.9.25 build before the three commands above):
+**Amazon Linux 2023** — default `/usr/bin/python3` is often **3.9** for OS tools; install **3.12** and use **`python3.12`** for these scripts and cron:
 
 ```bash
-sudo dnf install -y python3 python3-pip
+sudo dnf install -y python3.12 python3.12-pip
 ```
 
-**Ubuntu 22.04 (or similar):**
+**Ubuntu 22.04 / 24.04 (or similar):**
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-pip
+sudo apt install -y python3.12 python3.12-venv python3-pip
 ```
 
-Confirm versions the same way root’s cron will run:
+On Ubuntu you may use `python3` if `python3 --version` is already 3.10 or newer; otherwise prefer `python3.12`.
+
+Confirm versions the same way root’s cron will run (use the **same** `PY` you will put in crontab):
 
 ```bash
-sudo python3 -c "import sys; print(sys.version)"
-sudo python3 -c "import boto3, botocore; print('boto3', boto3.__version__, 'botocore', botocore.__version__)"
+sudo $PY -c "import sys; print(sys.version)"
+sudo $PY -c "import boto3, botocore; print('boto3', boto3.__version__, 'botocore', botocore.__version__)"
 ```
+
+### Upgrading an existing host (e.g. from Python 3.9 + old pip)
+
+If you already have boto3 under **`/usr/local/lib/python3.9/...`** or the deprecation warning appears:
+
+1. Install Python **3.12** (or 3.11) with your OS (see above) or keep using a **pyenv** / **/usr/local** build, as long as `python3.12 --version` works.
+2. Reinstall the SDK into **that** interpreter (system-wide example):
+
+   ```bash
+   sudo python3.12 -m ensurepip --upgrade 2>/dev/null || true
+   sudo python3.12 -m pip install --upgrade pip
+   sudo python3.12 -m pip install --upgrade boto3==1.42.88 botocore==1.42.88
+   ```
+
+3. Point **cron** and manual tests at the new binary, e.g. replace `/usr/bin/python3` with `/usr/bin/python3.12` (or `sudo which python3.12`).
+
+   ```bash
+   sudo crontab -e
+   ```
+
+4. Optionally remove old user/site installs only if nothing else on the box needs them:
+
+   ```bash
+   sudo python3.9 -m pip uninstall boto3 botocore
+   ```
+
+   Skip uninstall if other jobs still use 3.9.
 
 ## 4. Create directories
 
@@ -192,17 +222,17 @@ sudo crontab -e
 Add:
 
 ```cron
-# Primary sync — every 5 minutes
-*/5 * * * * /usr/bin/python3 /opt/camera_sync/camera_sync.py >> /var/log/camera/cron_sync.log 2>&1
+# Primary sync — every 5 minutes (use the interpreter where boto3 is installed, e.g. python3.12 on AL2023)
+*/5 * * * * /usr/bin/python3.12 /opt/camera_sync/camera_sync.py >> /var/log/camera/cron_sync.log 2>&1
 
 # Failed-file retry — hourly at minute 30
-30 * * * * /usr/bin/python3 /opt/camera_sync/retry_failed.py >> /var/log/camera/cron_retry.log 2>&1
+30 * * * * /usr/bin/python3.12 /opt/camera_sync/retry_failed.py >> /var/log/camera/cron_retry.log 2>&1
 ```
 
-Use the same `python3` path you verified with `sudo python3 -c "import boto3"`. Check with:
+Use the same interpreter path you verified with `sudo python3.12 -c "import boto3"` (adjust if your `PY` differs). Check with:
 
 ```bash
-sudo which python3
+sudo which python3.12
 sudo crontab -l
 ```
 
@@ -213,7 +243,7 @@ Lock files prevent overlapping runs of the same script; sync and retry can run a
 Run as root (same as cron):
 
 ```bash
-sudo /usr/bin/python3 /opt/camera_sync/camera_sync.py
+sudo /usr/bin/python3.12 /opt/camera_sync/camera_sync.py
 ```
 
 Then inspect:
@@ -226,7 +256,7 @@ Successful per-file lines include `upload_s=` and `verify_s=` (seconds for S3 up
 Run the retry job once if you have files under any `failed/` tree:
 
 ```bash
-sudo /usr/bin/python3 /opt/camera_sync/retry_failed.py
+sudo /usr/bin/python3.12 /opt/camera_sync/retry_failed.py
 ```
 
 ## 11. Monitoring (short)

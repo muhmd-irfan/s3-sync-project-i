@@ -136,11 +136,11 @@ crontab -e
 Add these two lines:
 
 ```cron
-# Primary sync — every 5 minutes
-*/5 * * * * /usr/bin/python3 /opt/camera_sync/camera_sync.py >> /var/log/camera/cron_sync.log 2>&1
+# Primary sync — every 5 minutes (use python3.12 / python3.11 if default python3 is 3.9)
+*/5 * * * * /usr/bin/python3.12 /opt/camera_sync/camera_sync.py >> /var/log/camera/cron_sync.log 2>&1
 
 # Failed-file retry — every hour at minute 30 (offset to avoid overlapping with sync)
-30 * * * * /usr/bin/python3 /opt/camera_sync/retry_failed.py >> /var/log/camera/cron_retry.log 2>&1
+30 * * * * /usr/bin/python3.12 /opt/camera_sync/retry_failed.py >> /var/log/camera/cron_retry.log 2>&1
 ```
 
 Save and exit. Verify with:

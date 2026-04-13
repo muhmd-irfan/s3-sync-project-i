@@ -23,22 +23,26 @@ With a role attached, you do **not** need `aws configure` on the instance unless
 
 ### 3. Install Python and boto3
 
+Use **Python 3.10+** (reference **3.12**). On **Amazon Linux 2023**, default `python3` is often still **3.9**; install **`python3.12`** and use that for cron so you avoid [AWS SDK 3.9 deprecation](https://aws.amazon.com/blogs/developer/python-support-policy-updates-for-aws-sdks-and-tools/).
+
 **Amazon Linux 2023:**
 
 ```bash
-sudo dnf install -y python3 python3-pip
-python3 -m pip install --user boto3
+sudo dnf install -y python3.12 python3.12-pip
+sudo python3.12 -m pip install --upgrade pip
+sudo python3.12 -m pip install boto3==1.42.88 botocore==1.42.88
 ```
 
 **Ubuntu:**
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-pip python3-venv
-python3 -m pip install --user boto3
+sudo apt install -y python3.12 python3.12-venv python3-pip
+sudo python3.12 -m pip install --upgrade pip
+sudo python3.12 -m pip install boto3==1.42.88 botocore==1.42.88
 ```
 
-Ensure the user that will run cron can import boto3 (same user as `pip install --user`, or install boto3 with `sudo pip3 install boto3` for a system-wide install).
+Ensure the user that runs cron can import boto3 (install with `sudo` as above for root’s crontab, or use `python3.12 -m pip install --user` under that user). Full upgrade steps from an old 3.9 install are in [setup.md](setup.md#upgrading-an-existing-host-eg-from-python-39--old-pip).
 
 ### 4. Deploy the scripts and directories
 
@@ -64,11 +68,11 @@ Edit **`/opt/camera_sync/camera_sync.py`** and **`/opt/camera_sync/retry_failed.
 
 ### 5. Schedule runs (cron)
 
-Follow [docs.md — Cron Setup](docs.md#cron-setup): sync every 5 minutes and the retry job hourly. Use the same `python3` you used to verify `boto3` (often `/usr/bin/python3`).
+Follow [docs.md — Cron Setup](docs.md#cron-setup): sync every 5 minutes and the retry job hourly. Use the same interpreter you used to verify `boto3` (on AL2023 often `/usr/bin/python3.12`).
 
 ### 6. Verify
 
-- Run once manually: `python3 /opt/camera_sync/camera_sync.py` and check `/var/log/camera/sync.log`.
+- Run once manually: `python3.12 /opt/camera_sync/camera_sync.py` (or your chosen `PY`) and check `/var/log/camera/sync.log`.
 - After cron is active, use the heartbeat and log paths described in [docs.md — Monitoring](docs.md#monitoring).
 
 For S3 request-rate notes and burstable-instance behavior, see the tuning section below and [docs.md](docs.md).
@@ -92,7 +96,7 @@ On Linux, auto mode uses `os.cpu_count()` (logical **vCPUs**). Check what the OS
 
 ```bash
 nproc
-python3 -c "import os; print(os.cpu_count())"
+python3.12 -c "import os; print(os.cpu_count())"
 ```
 
 ### vCPU reference (T2 vs T3)
