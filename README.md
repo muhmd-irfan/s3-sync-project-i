@@ -50,11 +50,11 @@ On the instance, copy or clone this repo, then:
 
 ```bash
 sudo mkdir -p /opt/camera_sync /var/log/camera
-sudo cp camera_sync.py retry_failed.py /opt/camera_sync/
+sudo cp camera_sync.py retry_failed.py sync_common.py /opt/camera_sync/
 sudo chmod +x /opt/camera_sync/*.py
 ```
 
-Create your FTP root if it does not exist (default in the scripts is `/var/ftp/local`):
+Create your FTP root if it does not exist (default is `/var/ftp/local` via `CAMERA_SYNC_BASE_DIR`):
 
 ```bash
 sudo mkdir -p /var/ftp/local
@@ -62,9 +62,16 @@ sudo chown -R <ftp-or-app-user>:<ftp-or-app-user> /var/ftp/local
 sudo chown <ftp-or-app-user>:<ftp-or-app-user> /var/log/camera
 ```
 
-Edit **`/opt/camera_sync/camera_sync.py`** and **`/opt/camera_sync/retry_failed.py`**: set `BASE_DIR`, `BUCKET`, `PREFIX`, and `LOG_DIR` to match this host. Keep `MAX_PROCESS_WORKERS` / `MAX_THREAD_WORKERS` aligned between the two files if you tune them.
+Set **environment variables** before running (required: `CAMERA_SYNC_BUCKET`). Copy [.env.example](.env.example) and adjust:
 
-**Lock files** default to `/var/run/camera_sync.lock` and `/var/run/retry_failed.lock`. On many distros only root can create files there. If cron runs as a non-root user and the job fails to create the lock, use **root’s crontab** (`sudo crontab -e`) or change `LOCKFILE` in both scripts to a path that user can write (for example under `/var/lib/camera_sync/`).
+```bash
+export CAMERA_SYNC_BUCKET=your-bucket-name
+export CAMERA_SYNC_PROJECT=binalapse-cameras
+```
+
+In **cron**, prefix each job with the same variables (or source an env file). See [docs.md — Configuration](docs.md#configuration).
+
+**Lock files** default to `/var/run/camera_sync.lock` and `/var/run/retry_failed.lock`. On many distros only root can create files there. If cron runs as a non-root user and the job fails to create the lock, use **root’s crontab** (`sudo crontab -e`) or change lock paths in the scripts to a writable directory (for example under `/var/lib/camera_sync/`).
 
 ### 5. Schedule runs (cron)
 
@@ -84,12 +91,11 @@ Both `camera_sync.py` and `retry_failed.py` use:
 - **`MAX_PROCESS_WORKERS`** — how many **user directories** run in parallel (`ProcessPoolExecutor`). Each process is a separate Python interpreter; it uses RAM and competes for **CPU credits** on burstable instances.
 - **`MAX_THREAD_WORKERS`** — how many **files per user** upload concurrently inside that process (`ThreadPoolExecutor`). S3 uploads are mostly **network I/O**, so you can often use **more threads than vCPUs**, but very high values increase memory and can trigger throttling.
 
-Set both at the **top of each script** (they are independent files; keep values in sync if you want the same behavior):
+Set both at the **top of each script** via environment variables (see [docs.md](docs.md#configuration)):
 
-```python
-# None = auto (see docs.md). Or set integers:
-MAX_PROCESS_WORKERS = 2 # cap parallel user processes
-MAX_THREAD_WORKERS = 8    # cap concurrent S3 uploads per user process
+```bash
+export CAMERA_SYNC_MAX_PROCESS_WORKERS=2
+export CAMERA_SYNC_MAX_THREAD_WORKERS=8
 ```
 
 On Linux, auto mode uses `os.cpu_count()` (logical **vCPUs**). Check what the OS sees:
@@ -123,13 +129,15 @@ Use these as a first pass, then watch CPU credit balance, memory, and `sync.log`
 | **Medium** (t2/t3 medium, large) | `2` | `8`–`12` | Matches 2 vCPUs; good default when several user folders exist. |
 | **High** (t3 xlarge, 2xlarge) | `4`–`8` (≤ vCPUs) | `12`–`20` | More parallel users; threads toward upper range only if memory is ample. |
 
+Set via `CAMERA_SYNC_MAX_PROCESS_WORKERS` and `CAMERA_SYNC_MAX_THREAD_WORKERS`.
+
 **Examples**
 
-- **t3.medium** (2 vCPUs), several camera users: `MAX_PROCESS_WORKERS = 2`, `MAX_THREAD_WORKERS = 10`.
-- **t2.micro** (1 vCPU), tight credits: `MAX_PROCESS_WORKERS = 1`, `MAX_THREAD_WORKERS = 6`.
-- **t3.xlarge** (4 vCPUs), many users: `MAX_PROCESS_WORKERS = 4`, `MAX_THREAD_WORKERS = 16`.
+- **t3.medium** (2 vCPUs), several camera users: `CAMERA_SYNC_MAX_PROCESS_WORKERS=2`, `CAMERA_SYNC_MAX_THREAD_WORKERS=10`.
+- **t2.micro** (1 vCPU), tight credits: `CAMERA_SYNC_MAX_PROCESS_WORKERS=1`, `CAMERA_SYNC_MAX_THREAD_WORKERS=6`.
+- **t3.xlarge** (4 vCPUs), many users: `CAMERA_SYNC_MAX_PROCESS_WORKERS=4`, `CAMERA_SYNC_MAX_THREAD_WORKERS=16`.
 
-If **`MAX_PROCESS_WORKERS`** is higher than the number of user directories, the extra workers stay idle. If it is higher than **vCPUs**, you may still benefit (I/O-bound uploads) but CPU-bound steps (MD5, gzip if enabled elsewhere) can contend—on T2/T3, prefer **`MAX_PROCESS_WORKERS <= vCPUs`** unless you have measured headroom.
+If **`CAMERA_SYNC_MAX_PROCESS_WORKERS`** is higher than the number of user directories, the extra workers stay idle.
 
 ### AWS side: S3 request rate
 
