@@ -147,36 +147,41 @@ sudo mkdir -p /var/ftp/local
 From your clone directory:
 
 ```bash
-sudo cp camera_sync.py retry_failed.py /opt/camera_sync/
+sudo cp camera_sync.py retry_failed.py sync_common.py /opt/camera_sync/
 sudo chmod +x /opt/camera_sync/camera_sync.py /opt/camera_sync/retry_failed.py
 ```
 
 You can remove or ignore the clone on the server after this if you only need the installed copies.
 
-## 6. Configure `BASE_DIR`, `BUCKET`, and related settings
+## 6. Configure environment variables
 
-Edit **both** files so they match each other:
+Both scripts load settings from environment variables via `sync_common.py`. **Do not edit Python source for bucket names** — set env vars in cron or an env file.
 
-- `/opt/camera_sync/camera_sync.py`
-- `/opt/camera_sync/retry_failed.py`
-
-At minimum set:
-
-| Setting | Purpose |
-|---------|---------|
-| `BASE_DIR` | Root of the per-user FTP tree |
-| `BUCKET` | Target S3 bucket name |
-| `PREFIX` | Key prefix under the bucket |
-| `LOG_DIR` | Directory for application logs |
-
-Optional: `MIN_AGE_SEC`, `ELIGIBLE_EXTS`, `MAX_PROCESS_WORKERS`, `MAX_THREAD_WORKERS` (keep worker limits aligned in both files if you set them). See the configuration table in [docs.md](docs.md).
-
-Use `sudo` or your editor of choice:
+Copy the example and edit:
 
 ```bash
-sudo nano /opt/camera_sync/camera_sync.py
-sudo nano /opt/camera_sync/retry_failed.py
+sudo cp .env.example /opt/camera_sync/env.sh
+sudo nano /opt/camera_sync/env.sh
 ```
+
+Minimum required:
+
+| Variable | Purpose |
+|----------|---------|
+| `CAMERA_SYNC_BUCKET` | Target S3 bucket name (**required**) |
+| `CAMERA_SYNC_PROJECT` | Label in Grafana failure logs (e.g. `binalapse-cameras`) |
+
+Common optional settings:
+
+| Variable | Purpose |
+|----------|---------|
+| `CAMERA_SYNC_BASE_DIR` | Root of the per-user FTP tree (default `/var/ftp/local`) |
+| `CAMERA_SYNC_PREFIX` | Key prefix under the bucket (default `cam`) |
+| `CAMERA_SYNC_LOG_DIR` | Application logs (default `/var/log/camera`) |
+| `CAMERA_SYNC_MAX_RETRIES` | Upload attempts before quarantine (default `3`) |
+| `CAMERA_SYNC_TIMEOUT_SEC` | Max sync runtime in seconds (default `480`) |
+
+Full table: [docs.md — Configuration](docs.md#configuration).
 
 ## 7. Lock files
 
@@ -222,11 +227,10 @@ sudo crontab -e
 Add:
 
 ```cron
-# Primary sync — every 5 minutes (use the interpreter where boto3 is installed, e.g. python3.12 on AL2023)
-*/5 * * * * /usr/bin/python3.12 /opt/camera_sync/camera_sync.py >> /var/log/camera/cron_sync.log 2>&1
+# Source env once per line, or inline variables:
+*/5 * * * * . /opt/camera_sync/env.sh; /usr/bin/python3.12 /opt/camera_sync/camera_sync.py >> /var/log/camera/cron_sync.log 2>&1
 
-# Failed-file retry — hourly at minute 30
-30 * * * * /usr/bin/python3.12 /opt/camera_sync/retry_failed.py >> /var/log/camera/cron_retry.log 2>&1
+30 * * * * . /opt/camera_sync/env.sh; /usr/bin/python3.12 /opt/camera_sync/retry_failed.py >> /var/log/camera/cron_retry.log 2>&1
 ```
 
 Use the same interpreter path you verified with `sudo python3.12 -c "import boto3"` (adjust if your `PY` differs). Check with:
@@ -243,6 +247,7 @@ Lock files prevent overlapping runs of the same script; sync and retry can run a
 Run as root (same as cron):
 
 ```bash
+sudo . /opt/camera_sync/env.sh
 sudo /usr/bin/python3.12 /opt/camera_sync/camera_sync.py
 ```
 
@@ -261,10 +266,9 @@ sudo /usr/bin/python3.12 /opt/camera_sync/retry_failed.py
 
 ## 11. Monitoring (short)
 
+- **Grafana:** Ship `/var/log/camera/upload_failures.jsonl` to Loki (or your log store). Alert on `event="upload_failed"`; fields `project`, `camera`, `file_path`, and `script` identify the source. See [docs.md — Monitoring](docs.md#monitoring).
 - **Heartbeat:** `cron_alive.log` should get a new line roughly every successful sync interval.
 - **Backlog:** persistent files under `failed/` after retries warrant checking `retry_error.log` and IAM/network.
-
-More detail: [docs.md — Monitoring](docs.md#monitoring).
 
 ## Reference layout
 
@@ -273,7 +277,8 @@ Paths below match a typical install (compare with `ls /opt`, `ls /var/ftp/local`
 ```
 /opt/camera_sync/
 ├── camera_sync.py
-└── retry_failed.py
+├── retry_failed.py
+└── sync_common.py
 
 /var/ftp/local/
 ├── bl001_ftpload001_cam2/ # one directory per FTP user (names vary)
@@ -289,6 +294,7 @@ Paths below match a typical install (compare with `ls /opt`, `ls /var/ftp/local`
 ├── sync.log
 ├── error.log
 ├── cron_alive.log
+├── upload_failures.jsonl    # Grafana-oriented failure log
 ├── retry.log # present once retry_failed.py has run
 ├── retry_error.log
 ├── cron_sync.log              # cron stdout/stderr for sync (if redirected)
