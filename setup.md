@@ -134,6 +134,7 @@ If you already have boto3 under **`/usr/local/lib/python3.9/...`** or the deprec
 
 ## 4. Create directories
 
+
 Pick an install location for the scripts (below uses `/opt/camera_sync`) and align log and FTP paths with what you will set in the Python files (defaults: `LOG_DIR=/var/log/camera`, `BASE_DIR=/var/ftp/local`).
 
 ```bash
