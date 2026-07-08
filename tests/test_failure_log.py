@@ -41,6 +41,35 @@ def test_failure_log_schema(cfg):
     assert record["bucket"] == "my-bucket"
 
 
+def test_failure_log_defaults_to_upload_failed_event(cfg):
+    log_upload_failure(
+        cfg,
+        script="camera_sync",
+        camera="cam01",
+        file_path="a.jpg",
+        reason="boom",
+        attempts=1,
+    )
+    record = json.loads(cfg.failure_log.read_text(encoding="utf-8").strip())
+    assert record["event"] == "upload_failed"
+
+
+def test_failure_log_file_rejected_event(cfg):
+    log_upload_failure(
+        cfg,
+        script="camera_sync",
+        camera="cam01",
+        file_path="182.163.106.233/2026-7-5/sched/photo.jpg",
+        reason="magic_bytes",
+        attempts=0,
+        event="file_rejected",
+    )
+    record = json.loads(cfg.failure_log.read_text(encoding="utf-8").strip())
+    assert record["event"] == "file_rejected"
+    assert record["reason"] == "magic_bytes"
+    assert record["attempts"] == 0
+
+
 def test_failure_log_sanitizes_multiline_reason(cfg):
     log_upload_failure(
         cfg,

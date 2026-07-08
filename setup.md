@@ -266,7 +266,7 @@ sudo /usr/bin/python3.12 /opt/camera_sync/retry_failed.py
 
 ## 11. Monitoring (short)
 
-- **Grafana:** Ship `/var/log/camera/upload_failures.jsonl` to Loki (or your log store). Alert on `event="upload_failed"`; fields `project`, `camera`, `file_path`, and `script` identify the source. See [docs.md — Monitoring](docs.md#monitoring).
+- **Grafana:** Ship `/var/log/camera/upload_failures.jsonl` to Loki (or your log store). Alert on `event="upload_failed"` (failed S3 uploads) and `event="file_rejected"` (files rejected during scanning, with `reason=magic_bytes` etc.); fields `project`, `camera`, `file_path`, and `script` identify the source. See [docs.md — Monitoring](docs.md#monitoring).
 - **Heartbeat:** `cron_alive.log` should get a new line roughly every successful sync interval.
 - **Backlog:** persistent files under `failed/` after retries warrant checking `retry_error.log` and IAM/network.
 

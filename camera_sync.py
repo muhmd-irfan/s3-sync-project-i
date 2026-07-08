@@ -53,6 +53,7 @@ def sync_user(cfg: Config, user: str, thread_workers: int) -> dict:
         "ok": 0,
         "failed": 0,
         "skipped": 0,
+        "rejected": 0,
         "errors": [],
         "upload_sec": 0.0,
         "verify_sec": 0.0,
@@ -105,13 +106,28 @@ def sync_user(cfg: Config, user: str, thread_workers: int) -> dict:
             if skip_reason == "too_young":
                 stats["skipped"] += 1
             elif skip_reason in ("magic_bytes", "unsafe_path", "symlink", "outside_root"):
+                rel_display = (
+                    fpath.relative_to(user_root)
+                    if fpath.is_relative_to(user_root)
+                    else fpath
+                )
                 proc_log.warning(
                     "%s | Rejected | %s | %s",
                     user,
-                    fpath.relative_to(user_root) if fpath.is_relative_to(user_root) else fpath,
+                    rel_display,
                     skip_reason,
                 )
-                stats["skipped"] += 1
+                stats["rejected"] += 1
+                log_upload_failure(
+                    cfg,
+                    script=SCRIPT_NAME,
+                    camera=user,
+                    file_path=rel_display.as_posix() if isinstance(rel_display, Path) else str(rel_display),
+                    reason=skip_reason,
+                    attempts=0,
+                    error_logger=proc_log,
+                    event="file_rejected",
+                )
             continue
         eligible.append(fpath)
 
@@ -215,10 +231,11 @@ def sync_user(cfg: Config, user: str, thread_workers: int) -> dict:
         prune_empty_dirs(spool_dir)
 
     proc_log.info(
-        "%s | Done | ok=%d failed=%d skipped=%d | upload_s=%.3f verify_s=%.3f",
+        "%s | Done | ok=%d failed=%d rejected=%d skipped=%d | upload_s=%.3f verify_s=%.3f",
         user,
         stats["ok"],
         stats["failed"],
+        stats["rejected"],
         stats["skipped"],
         stats["upload_sec"],
         stats["verify_sec"],
@@ -265,6 +282,7 @@ def _run_sync(cfg: Config) -> None:
                     "user": user,
                     "ok": 0,
                     "failed": 0,
+                    "rejected": 0,
                     "errors": ["process crash"],
                     "upload_sec": 0.0,
                     "verify_sec": 0.0,
@@ -272,15 +290,17 @@ def _run_sync(cfg: Config) -> None:
 
     total_ok = sum(s["ok"] for s in all_stats)
     total_fail = sum(s["failed"] for s in all_stats)
+    total_rejected = sum(s.get("rejected", 0) for s in all_stats)
     total_upload_s = sum(float(s.get("upload_sec", 0.0)) for s in all_stats)
     total_verify_s = sum(float(s.get("verify_sec", 0.0)) for s in all_stats)
 
     write_alive_marker(cfg)
 
     log.info(
-        "Sync end | total_ok=%d total_failed=%d | upload_s=%.3f verify_s=%.3f",
+        "Sync end | total_ok=%d total_failed=%d total_rejected=%d | upload_s=%.3f verify_s=%.3f",
         total_ok,
         total_fail,
+        total_rejected,
         total_upload_s,
         total_verify_s,
     )

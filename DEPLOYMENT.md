@@ -20,7 +20,8 @@ moves it to `failed/` on failure.
 - Config comes **only from environment variables** — you never edit Python for
 your bucket name.
 - Runs from **root's crontab**. Logs go to `/var/log/camera/`. Upload failures
-are also written as JSON lines to `upload_failures.jsonl` for Grafana.
+and rejected files are also written as JSON lines to `upload_failures.jsonl`
+for Grafana (`event="upload_failed"` vs `event="file_rejected"`).
 
 ---
 
@@ -502,12 +503,12 @@ sudo tail -f /var/log/camera/error.log         # watch only warnings/errors
 
 | File                                    | What's in it                                                 |
 | --------------------------------------- | ------------------------------------------------------------ |
-| `/var/log/camera/sync.log`              | Full sync activity (per-file `OK`/`FAIL`, `Sync end` totals) |
+| `/var/log/camera/sync.log`              | Full sync activity (per-file `OK`/`FAIL`/`Rejected`, `Sync end` totals incl. `total_rejected`) |
 | `/var/log/camera/error.log`             | Sync warnings & errors only                                  |
 | `/var/log/camera/retry.log`             | Full retry activity (`DIAG`, `RETRY OK`, `RESOLVED`)         |
 | `/var/log/camera/retry_error.log`       | Retry warnings & errors only                                 |
 | `/var/log/camera/cron_alive.log`        | One `OK` heartbeat line per successful sync                  |
-| `/var/log/camera/upload_failures.jsonl` | One JSON object per failed upload (for Grafana)              |
+| `/var/log/camera/upload_failures.jsonl` | One JSON object per failed upload (`upload_failed`) or rejected file (`file_rejected`), for Grafana |
 | `/var/log/camera/cron_sync.log`         | Raw stdout/stderr from cron for the sync job                 |
 | `/var/log/camera/cron_retry.log`        | Raw stdout/stderr from cron for the retry job                |
 
@@ -533,10 +534,14 @@ sudo systemctl status cron
 ## Step 12 — Monitoring with Grafana + Loki
 
 Goal: ship `/var/log/camera/upload_failures.jsonl` to **Loki**, view/alert on it
-in **Grafana**. Each failure is one JSON line like:
+in **Grafana**. Each line is one JSON record. The `event` field is either
+`upload_failed` (an S3 upload failed after retries) or `file_rejected` (a scanned
+file was rejected before upload; `reason` is `magic_bytes`, `unsafe_path`,
+`symlink`, or `outside_root`, and `attempts` is `0`):
 
 ```json
 {"timestamp":"2026-06-25T14:30:00Z","level":"error","event":"upload_failed","project":"binalapse-cameras","script":"camera_sync","camera":"cam042","file_path":"2026/06/25/photo.jpg","s3_key":"cam/cam042/2026/06/25/photo.jpg","bucket":"my-bucket","reason":"Size mismatch: local=1024 remote=512","attempts":3}
+{"timestamp":"2026-06-25T14:30:00Z","level":"error","event":"file_rejected","project":"binalapse-cameras","script":"camera_sync","camera":"cam042","file_path":"2026/06/25/photo.jpg","s3_key":"cam/cam042/2026/06/25/photo.jpg","bucket":"my-bucket","reason":"magic_bytes","attempts":0}
 ```
 
 You have two paths. **Option A** (Grafana Cloud) is least maintenance;
@@ -612,11 +617,20 @@ Run this on the EC2 box (or a separate monitoring box). Requires Docker.
    # Every upload failure
    {job="camera-sync"} | json | event="upload_failed"
 
+   # Every rejected file (bad magic bytes, unsafe path, symlink, outside root)
+   {job="camera-sync"} | json | event="file_rejected"
+
+   # Rejections for one reason
+   {job="camera-sync"} | json | event="file_rejected" | reason="magic_bytes"
+
    # Failures for one camera
    {job="camera-sync"} | json | camera="cam042"
 
    # Rate: more than 5 failures in 15 min for a project
    sum(count_over_time({job="camera-sync"} | json | event="upload_failed" | project="binalapse-cameras" [15m])) > 5
+
+   # Rate: more than 20 rejected files in 15 min for a project
+   sum(count_over_time({job="camera-sync"} | json | event="file_rejected" | project="binalapse-cameras" [15m])) > 20
   ```
 2. [ ] Create an **Alert rule** (Alerting → Alert rules → New) using that last
   query with a threshold, and wire it to your notification channel (email,

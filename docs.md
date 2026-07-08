@@ -44,7 +44,7 @@ BASE_DIR/
 | `sync.log`               | Full debug-level activity                    |
 | `error.log`              | Warnings and errors only                     |
 | `cron_alive.log`         | One-line heartbeat per run (rotated)         |
-| `upload_failures.jsonl`  | One JSON object per upload failure (Grafana) |
+| `upload_failures.jsonl`  | One JSON object per upload failure (`upload_failed`) or rejected file (`file_rejected`), for Grafana |
 
 **Lock file:** `/var/run/camera_sync.lock` — prevents overlapping runs.  If a
 previous cron invocation is still running, the new one exits silently.
@@ -197,6 +197,11 @@ crontab -l
 
 Each upload failure from `camera_sync.py` or `retry_failed.py` appends **one JSON line** to `upload_failures.jsonl`. Point your log shipper (Promtail, Fluent Bit, etc.) at this file and parse JSON fields.
 
+The `event` field distinguishes record types:
+
+- `event="upload_failed"` — an S3 upload was attempted and failed (after retries).
+- `event="file_rejected"` — a scanned file was rejected before upload (the `reason` field carries the cause: `magic_bytes`, `unsafe_path`, `symlink`, or `outside_root`; `attempts` is `0`).
+
 Example record:
 
 ```json
@@ -221,11 +226,20 @@ Example LogQL queries (adjust labels to match your agent):
 # Any upload failure
 {job="camera-sync"} | json | event="upload_failed"
 
+# Any rejected file (bad magic bytes, unsafe path, symlink, outside root)
+{job="camera-sync"} | json | event="file_rejected"
+
+# Rejections for one reason
+{job="camera-sync"} | json | event="file_rejected" | reason="magic_bytes"
+
 # Failures for one camera
 {job="camera-sync"} | json | camera="cam042"
 
 # Alert: more than 5 failures in 15 minutes for a project
 sum(count_over_time({job="camera-sync"} | json | event="upload_failed" | project="binalapse-cameras" [15m])) > 5
+
+# Alert: more than 20 rejected files in 15 minutes for a project
+sum(count_over_time({job="camera-sync"} | json | event="file_rejected" | project="binalapse-cameras" [15m])) > 20
 ```
 
 Recommended Promtail scrape: path `/var/log/camera/upload_failures.jsonl` with a `json` pipeline stage so `project`, `camera`, `file_path`, and `script` are queryable.

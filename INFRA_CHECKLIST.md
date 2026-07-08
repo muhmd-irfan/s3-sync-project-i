@@ -37,6 +37,7 @@ Cameras only support plain FTP. Compensate at the network layer:
 - [ ] Use a **JSON pipeline stage** so fields are parsed: `project`, `camera`, `file_path`, `script`, `event`, `reason`
 - [ ] Wire **Grafana alerts** to your existing system, for example:
   - Any `event="upload_failed"` for a given `project`
+  - Any `event="file_rejected"` (e.g. `reason="magic_bytes"`) for a given `project`
   - Rate alert: more than N failures in 15 minutes
   - Per-camera alert: `camera="cam042"` failures
 - [ ] Optionally ship `error.log` and `retry_error.log` for human-readable debugging
