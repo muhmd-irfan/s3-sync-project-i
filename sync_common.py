@@ -453,8 +453,14 @@ def log_upload_failure(
     attempts: int = 1,
     s3_key: Optional[str] = None,
     error_logger: Optional[logging.Logger] = None,
+    event: str = "upload_failed",
 ) -> None:
-    """Append one JSON line to upload_failures.jsonl for Grafana/Loki."""
+    """Append one JSON line to upload_failures.jsonl for Grafana/Loki.
+
+    *event* distinguishes the kind of record (e.g. ``"upload_failed"`` for a
+    failed S3 upload vs ``"file_rejected"`` for a file rejected during scanning),
+    letting Grafana/Loki filter and alert on each independently.
+    """
     normalized_path = file_path.replace("\\", "/").lstrip("/")
     key = s3_key or make_s3_key(cfg, camera, normalized_path)
     clean_reason = reason.replace("\n", " ").replace("\r", " ")
@@ -462,7 +468,7 @@ def log_upload_failure(
     record = {
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "level": "error",
-        "event": "upload_failed",
+        "event": event,
         "project": cfg.project,
         "script": script,
         "camera": camera,
@@ -483,7 +489,8 @@ def log_upload_failure(
 
     if error_logger is not None:
         error_logger.error(
-            "upload_failed | project=%s camera=%s file=%s reason=%s",
+            "%s | project=%s camera=%s file=%s reason=%s",
+            event,
             cfg.project,
             camera,
             normalized_path,
